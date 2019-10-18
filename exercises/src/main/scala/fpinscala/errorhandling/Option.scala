@@ -14,10 +14,7 @@ sealed trait Option[+A] {
     case None => default
   }
 
-  def flatMap[B](f: A => Option[B]): Option[B] = this match {
-    case Some(value) => f(value)
-    case None => None
-  }
+  def flatMap[B](f: A => Option[B]): Option[B] = map(f) getOrElse(None)
 
 
   def orElse[B>:A](ob: => Option[B]): Option[B] = this match {
@@ -89,5 +86,10 @@ object Option {
 
     val transformed = mapValues(a)
     if (transformed.size == a.size) Some(transformed) else None
+  }
+
+  def traverse2[A, B](a: List[A])(f: A => Option[B]): Option[List[B]] = a match {
+    case Nil => Some(Nil)
+    case x :: xs => map2(f(x), traverse2(xs)(f))(_ :: _) // (+)
   }
 }
