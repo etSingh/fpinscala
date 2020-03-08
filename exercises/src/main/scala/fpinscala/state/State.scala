@@ -1,5 +1,7 @@
 package fpinscala.state
 
+import fpinscala.state.RNG.Simple
+
 
 trait RNG {
   def nextInt: (Int, RNG) // Should generate a random `Int`. We'll later define other functions in terms of `nextInt`.
@@ -30,21 +32,84 @@ object RNG {
       (f(a), rng2)
     }
 
-  def nonNegativeInt(rng: RNG): (Int, RNG) = ???
+  def nonNegativeInt(rng: RNG): (Int, RNG) = {
+    val (num1, rng1) = rng.nextInt
+    if (num1 > 0) (num1, rng1)
+    else if (num1 == Integer.MIN_VALUE) nonNegativeInt(rng1)
+    else (-num1, rng1)
+  }
 
-  def double(rng: RNG): (Double, RNG) = ???
+  def double(rng: RNG): (Double, RNG) = {
+    val (num1, rng1) = nonNegativeInt(rng)
+    (toDoubleLessThanOne(num1), rng1)
+  }
 
-  def intDouble(rng: RNG): ((Int,Double), RNG) = ???
+  def doubleElegant: Rand[Double] = map(nonNegativeInt)(toDoubleLessThanOne)
 
-  def doubleInt(rng: RNG): ((Double,Int), RNG) = ???
+  // Converting an Int to a Double
+  def toDoubleLessThanOne(n: Int): Double = {
+    def length(n: Int)(l: Int): Double = {
+      if (n <= 0) Math.pow(10, l)
+      else length(n / 10)(l + 1)
+    }
+    n / length(n)(0)
+  }
 
-  def double3(rng: RNG): ((Double,Double,Double), RNG) = ???
+  def intDouble(rng: RNG): ((Int,Double), RNG) = {
+    val (int1, rng1) = nonNegativeInt(rng)
+    val (double1, rng2) = double(rng1)
+    ((int1, double1), rng2)
+  }
 
-  def ints(count: Int)(rng: RNG): (List[Int], RNG) = ???
+  def doubleInt(rng: RNG): ((Double,Int), RNG) = {
+    val ((int1, double1), rng1) = intDouble(rng)
+    ((double1, int1), rng1)
+  }
 
-  def map2[A,B,C](ra: Rand[A], rb: Rand[B])(f: (A, B) => C): Rand[C] = ???
+  def double3(rng: RNG): ((Double,Double,Double), RNG) = {
+    val (double1, rng1) = double(rng)
+    val (double2, rng2) = double(rng1)
+    val (double3, rng3) = double(rng2)
+    ((double1, double2, double3), rng3)
+  }
 
-  def sequence[A](fs: List[Rand[A]]): Rand[List[A]] = ???
+  def ints(count: Int)(rng: RNG): (List[Int], RNG) = {
+    if (count == 0) (Nil, rng)
+    else {
+      val (i, rng1) = rng.nextInt
+      val (res, rngN) = ints(count - 1)(rng1)
+      (List(i) ::: res, rngN)
+    }
+  }
+
+  def map2[A,B,C](ra: Rand[A], rb: Rand[B])(f: (A, B) => C): Rand[C] =
+    rnd => {
+      val (v1, rnd1) = ra(rnd)
+      val (v2, rnd2) = rb(rnd1)
+      (f(v1, v2), rnd2)
+    }
+
+  def both[A,B](ra: Rand[A], rb: Rand[B]): Rand[(A,B)] = {
+    map2(ra, rb)((a, b) => (a, b)) // In this case the return type of map2 'C' is (A, B): Rand[]
+  }
+
+  val randIntDouble: Rand[(Int, Double)] = both(int, double)
+  val randDoubleInt: Rand[(Double, Int)] = both(double, int)
+
+
+  def sequence[A](fs: List[Rand[A]]): Rand[List[A]] =
+    fs match {
+      case Nil => rnd => (Nil, rnd)
+      case x :: xs => map2(x, sequence(xs))((x, xs) => x :: xs)
+    }
+
+  def sequenceWithFold[A](fs: List[Rand[A]]): Rand[List[A]] = {
+    val unit: Rand[List[A]] = rnd => (Nil, rnd)
+    fs.foldLeft(unit)((remainingList, head) => map2(head, remainingList)((x, xs) => x :: xs))
+  }
+
+  def intsBetter(count: Int): Rand[List[Int]] =
+    sequence(List.fill(count)(_.nextInt))
 
   def flatMap[A,B](f: Rand[A])(g: A => Rand[B]): Rand[B] = ???
 }
