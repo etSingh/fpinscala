@@ -1,8 +1,5 @@
 package fpinscala.state
 
-import fpinscala.state.RNG.Simple
-
-
 trait RNG {
   def nextInt: (Int, RNG) // Should generate a random `Int`. We'll later define other functions in terms of `nextInt`.
 }
@@ -19,6 +16,10 @@ object RNG {
     }
   }
 
+  /**
+    * Anything returning this type alias will take RNG as input even if it's
+    * not specified as an input variable in the definition of the function.
+    */
   type Rand[+A] = RNG => (A, RNG)
 
   val int: Rand[Int] = _.nextInt
@@ -111,25 +112,150 @@ object RNG {
   def intsBetter(count: Int): Rand[List[Int]] =
     sequence(List.fill(count)(_.nextInt))
 
-  def flatMap[A,B](f: Rand[A])(g: A => Rand[B]): Rand[B] = ???
+  def flatMap[A,B](f: Rand[A])(g: A => Rand[B]): Rand[B] =
+    rng => {
+      val (a, rng2) = f(rng)
+      g(a)(rng2)
+    }
+
+  def mapUsingFlatMap[A,B](s: Rand[A])(f: A => B): Rand[B] =
+    flatMap(s)(a => unit(f(a)))
+
+  def map2UsingFlatMap[A,B,C](ra: Rand[A], rb: Rand[B])(f: (A, B) => C): Rand[C] =
+    flatMap(ra)(a => {
+      rng => {
+        val (b, rng_b) = rb(rng)
+        (f(a, b), rng_b)
+      }
+    })
 }
 
 case class State[S,+A](run: S => (A, S)) {
+
+  /**
+    * if state was instead a type alias
+    * type State[S, A] = S => (A, S)
+    * the fun signature would have been different
+    * see page 88
+    */
   def map[B](f: A => B): State[S, B] =
-    ???
+    State(input => {
+      // Notice how the run method is called here
+      // if State was a type alias, it would have to
+      // be passed in the method as (f: S => (A, S))
+      val (a, output) = run(input)
+      (f(a), output)
+    })
+
+
   def map2[B,C](sb: State[S, B])(f: (A, B) => C): State[S, C] =
-    ???
+    State(
+      input => {
+        val (b, output1) = sb.run(input)
+        val (a, output2) = run(output1)
+        (f(a, b), output2)
+      }
+    )
+
+
   def flatMap[B](f: A => State[S, B]): State[S, B] =
-    ???
+    State(
+      input => {
+        val (a, output1) = run(input)
+        f(a).run(output1)
+      }
+    )
+}
+
+object State {
+  type Rand[A] = State[RNG, A]
+
+  def unit[S, A](a: A): State[S, A] =
+    State(input => (a, input))
+
+  def sequence[S, A](fs: List[State[S, A]]): State[S, List[A]] = {
+    fs.foldLeft(unit[S, List[A]](List()))((remainingList, head) => remainingList.map2(head)((x, xs) => xs :: x))
+  }
+
+  def get[S]: State[S, S] = State(s => (s, s))
+
+  def set[S](s: S): State[S, Unit] = State(_ => ((), s))
+
+  def modify[S](f: S => S): State[S, Unit] = for {
+    s <- get // Gets the current state and assigns it to `s`.
+    _ <- set(f(s)) // Sets the new state to `f` applied to `s`.
+  } yield ()
 }
 
 sealed trait Input
 case object Coin extends Input
 case object Turn extends Input
 
-case class Machine(locked: Boolean, candies: Int, coins: Int)
+case class Machine(locked: Boolean, candies: Int, coins: Int) {
+  def areCandiesLeft: Boolean = candies > 0
+}
 
-object State {
-  type Rand[A] = State[RNG, A]
-  def simulateMachine(inputs: List[Input]): State[Machine, (Int, Int)] = ???
+object CandyMachine {
+
+  // Check out the answers for the super functional version of this
+  def simulateMachine(inputs: List[Input]): State[Machine, (Int, Int)] = State(
+    machine => {
+      inputs match {
+        case Nil => ((machine.coins, machine.candies), machine)
+        case x :: xs =>
+          val nextMachineState = getNextCandyMachineState(x)(machine)
+          // Notice how .run takes in a machine as input! It's because run
+          // is just a lambda from S => (A, S) so it needs to take S as it's
+          // input
+          simulateMachine(xs).run(nextMachineState)
+      }
+    }
+  )
+
+  def getNextCandyMachineState(input: Input): Machine => Machine =
+    machine => {
+      input match {
+        case Coin =>
+          if (machine.locked && machine.areCandiesLeft)
+            Machine(locked = false, machine.candies, machine.coins + 1)
+          else
+            machine
+        case Turn =>
+          if (!machine.locked && machine.areCandiesLeft)
+            Machine(locked = true, machine.candies - 1, machine.coins)
+          else
+            machine
+      }
+    }
+
+}
+
+object Main extends App {
+
+  import fpinscala.state.RNG.{Rand, flatMap, nonNegativeInt, toDoubleLessThanOne}
+
+
+  def double2: Rand[Double] = RNG.mapUsingFlatMap(nonNegativeInt)(toDoubleLessThanOne)
+
+  def nonNegativeLessThan(n: Int): Rand[Int] =
+    flatMap(nonNegativeInt) {
+      nonNegativeInt => { rnd =>
+        val mod = nonNegativeInt % n
+        if (nonNegativeInt + (n - 1) - mod >= 0) (mod, rnd)
+        else nonNegativeLessThan(n)(rnd)
+      }
+    }
+
+  def rollDice: Rand[Int] = nonNegativeLessThan(6)
+
+  println(RNG.doubleElegant(RNG.Simple(2L)))
+  println(double2(RNG.Simple(2L)))
+  println(nonNegativeLessThan(88)) // will return a lambda because this still needs an input RND
+  println(nonNegativeLessThan(88)(RNG.Simple(76575)))
+
+  val candyMachine = Machine(locked = true, 5, 10)
+
+  val input = List(Coin, Turn, Coin, Turn, Coin, Turn, Coin, Turn)
+
+  println(CandyMachine.simulateMachine(input).run(candyMachine))
 }
