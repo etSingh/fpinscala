@@ -77,7 +77,7 @@ object Par {
   def choiceNV2[A](n: Par[Int])(choices: List[Par[A]]): Par[A] =
     chooser(n)(index => choices(index))
 
-  def choiceMap[K, V](key: Par[K])(choices: Map[K, Par[V]]): Par[V] =
+  def choiceMapV2[K, V](key: Par[K])(choices: Map[K, Par[V]]): Par[V] =
     chooser(key)(key => choices(key))
 
   def join[A](a: Par[Par[A]]): Par[A] =

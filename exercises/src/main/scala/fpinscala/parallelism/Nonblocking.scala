@@ -9,7 +9,7 @@ import scala.util.{Failure, Success}
 object Nonblocking {
 
   trait Future[+A] {
-    private[parallelism] def apply(k: A => Unit)(errorhandler: Throwable => Unit = throw (_)): Unit
+    private[parallelism] def apply(k: A => Unit): Unit
   }
 
   type Par[+A] = ExecutorService => Future[A]
@@ -20,30 +20,27 @@ object Nonblocking {
       val ref = new java.util.concurrent.atomic.AtomicReference[A] // A mutable, threadsafe reference, to use for storing the result
       val latch = new CountDownLatch(1) // A latch which, when decremented, implies that `ref` has the result
       // Asynchronously set the result, and decrement the latch
-      p(es) { a => ref.set(a); latch.countDown() }(ex => {
-        println(ex) // Maybe do something better with the exception?
-        latch.countDown()
-      })
+      p(es) { a => ref.set(a); latch.countDown() }
       latch.await() // Block until the `latch.countDown` is invoked asynchronously
       ref.get // Once we've passed the latch, we know `ref` has been set, and return its value
     }
 
     def unit[A](a: A): Par[A] =
       es => new Future[A] {
-        def apply(cb: A => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(cb: A => Unit): Unit =
           cb(a)
       }
 
     /** A non-strict version of `unit` */
     def delay[A](a: => A): Par[A] =
       es => new Future[A] {
-        def apply(cb: A => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(cb: A => Unit): Unit =
           cb(a)
       }
 
     def fork[A](a: => Par[A]): Par[A] =
       es => new Future[A] {
-        def apply(cb: A => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(cb: A => Unit): Unit =
           eval(es)(a(es)(cb))
       }
 
@@ -52,7 +49,7 @@ object Nonblocking {
      * This will come in handy in Chapter 13.
      */
     def async[A](f: (A => Unit) => Unit): Par[A] = es => new Future[A] {
-      def apply(k: A => Unit)(errorhandler: Throwable => Unit) = f(k)
+      def apply(k: A => Unit) = f(k)
     }
 
     /**
@@ -67,7 +64,7 @@ object Nonblocking {
 
     def map2[A, B, C](p: Par[A], p2: Par[B])(f: (A, B) => C): Par[C] =
       es => new Future[C] {
-        def apply(cb: C => Unit)(errorhandler: Throwable => Unit): Unit = {
+        def apply(cb: C => Unit): Unit = {
           var ar: Option[A] = None
           var br: Option[B] = None
           val combiner = Actor[Either[A, B]](es) {
@@ -86,7 +83,7 @@ object Nonblocking {
     // specialized version of `map`
     def map[A, B](p: Par[A])(f: A => B): Par[B] =
       es => new Future[B] {
-        def apply(cb: B => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(cb: B => Unit): Unit =
           p(es)(a => eval(es) {
             cb(f(a))
           })
@@ -134,7 +131,7 @@ object Nonblocking {
      */
     def choice[A](p: Par[Boolean])(t: Par[A], f: Par[A]): Par[A] =
       es => new Future[A] {
-        def apply(cb: A => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(cb: A => Unit): Unit =
           p(es) { b =>
             if (b) eval(es) { t(es)(cb) }
             else eval(es) { f(es)(cb) }
@@ -143,7 +140,7 @@ object Nonblocking {
 
     def choiceN[A](p: Par[Int])(ps: List[Par[A]]): Par[A] =
       es => new Future[A] {
-        def apply(k: A => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(k: A => Unit): Unit =
           p(es)(index => {
             eval(es) {
               ps(index)(es)(k)
@@ -156,7 +153,7 @@ object Nonblocking {
 
     def choiceMap[K, V](p: Par[K])(ps: Map[K, Par[V]]): Par[V] =
       es => new Future[V] {
-        def apply(k: V => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(k: V => Unit): Unit =
           p(es) { key =>
             val value = ps(key)
             eval(es) { value(es)(k) } // Should eval not be used?
@@ -166,7 +163,7 @@ object Nonblocking {
     // see `Nonblocking.scala` answers file. This function is usually called something else!
     def chooser[A, B](p: Par[A])(f: A => Par[B]): Par[B] =
       es => new Future[B] {
-        def apply(k: B => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(k: B => Unit): Unit =
           p(es) { a =>
             val pb = f(a)
             eval(es) { pb(es)(k) }
@@ -184,7 +181,7 @@ object Nonblocking {
 
     def join[A](p: Par[Par[A]]): Par[A] =
       es => new Future[A] {
-        def apply(k: A => Unit)(errorhandler: Throwable => Unit): Unit =
+        def apply(k: A => Unit): Unit =
           p(es) {a => {
             eval(es)(a(es)(k))
           }}
