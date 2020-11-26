@@ -29,7 +29,8 @@ object Par {
       UnitFuture(f(af.get, bf.get)) // This implementation of `map2` does _not_ respect timeouts, and eagerly waits for the returned futures. This means that even if you have passed in "forked" arguments, using this map2 on them will make them wait. It simply passes the `ExecutorService` on to both `Par` values, waits for the results of the Futures `af` and `bf`, applies `f` to them, and wraps them in a `UnitFuture`. In order to respect timeouts, we'd need a new `Future` implementation that records the amount of time spent evaluating `af`, then subtracts that time from the available time allocated for evaluating `bf`.
     }
 
-  def fork[A](a: => Par[A]): Par[A] = // This is the simplest and most natural implementation of `fork`, but there are some problems with it--for one, the outer `Callable` will block waiting for the "inner" task to complete. Since this blocking occupies a thread in our thread pool, or whatever resource backs the `ExecutorService`, this implies that we're losing out on some potential parallelism. Essentially, we're using two threads when one should suffice. This is a symptom of a more serious problem with the implementation, and we will discuss this later in the chapter.
+  def fork[A](a: => Par[A]): Par[A] = // This is the simplest and most natural implementation of `fork`, but there
+  // are some problems with it--for one, the outer `Callable` will block waiting for the "inner" task to complete. Since this blocking occupies a thread in our thread pool, or whatever resource backs the `ExecutorService`, this implies that we're losing out on some potential parallelism. Essentially, we're using two threads when one should suffice. This is a symptom of a more serious problem with the implementation, and we will discuss this later in the chapter.
     es => es.submit(new Callable[A] {
       def call = a(es).get
     })
@@ -45,15 +46,62 @@ object Par {
   def delay[A](fa: => Par[A]): Par[A] =
     es => fa(es)
 
+  def lazyUnit[A](a: => A): Par[A] = fork(unit(a))
+
+  def asyncF[A, B](f: A => B): A => Par[B] =
+    a => lazyUnit(f(a))
+
   def choice[A](cond: Par[Boolean])(t: Par[A], f: Par[A]): Par[A] =
     es =>
       if (run(es)(cond).get) t(es) // Notice we are blocking on the result of `cond`.
       else f(es)
 
-  def lazyUnit[A](a: => A): Par[A] = fork(unit(a))
+  def choiceN[A](n: Par[Int])(choices: List[Par[A]]): Par[A] =
+    es => choices(run(es)(n).get)(es)
 
-  def asyncF[A, B](f: A => B): A => Par[B] =
-    a => lazyUnit(f(a))
+  def choiceViaChoiceN[A](a: Par[Boolean])(ifTrue: Par[A], ifFalse: Par[A]): Par[A] =
+    choiceN(Par.map(a)(b => if (b) 0 else 1))(List(ifTrue, ifFalse))
+
+  def choiceMap[K, V](key: Par[K])(choices: Map[K, Par[V]]): Par[V] =
+    es => choices(run(es)(key).get())(es)
+
+  // AKA flatmap
+  def chooser[A, B](pa: Par[A])(choices: A => Par[B]): Par[B] =
+    es => choices(run(es)(pa).get())(es)
+
+  // Reimplementing using chooser
+
+  def choiceV2[A](cond: Par[Boolean])(t: Par[A], f: Par[A]): Par[A] =
+    chooser(cond)(boolean => if (boolean) t else f)
+
+  def choiceNV2[A](n: Par[Int])(choices: List[Par[A]]): Par[A] =
+    chooser(n)(index => choices(index))
+
+  def choiceMap[K, V](key: Par[K])(choices: Map[K, Par[V]]): Par[V] =
+    chooser(key)(key => choices(key))
+
+  def join[A](a: Par[Par[A]]): Par[A] =
+    es => run(es)(a).get()(es)
+
+  def joinUsingFlatmap[A](a: Par[Par[A]]): Par[A] =
+    chooser(a)(a => { // or simply a => a (identity?)
+      es =>
+        run(es)(a)
+    })
+
+  def flatmapUsingJoin[A, B](pa: Par[A])(choices: A => Par[B]): Par[B] =
+    join(map(pa)(choices))
+
+  def map2UsingPrimitives[A, B, C](a: Par[A], b: Par[B])(f: (A, B) => C): Par[C] = {
+    val pbc: Par[B => C] = chooser(a)(a => unit(f(a, _)))
+
+    //chooser(b)(b => map(pbc)(fn => fn(b))) // map uses map2 so this isn't ideal
+
+    chooser(b)(b => {
+      es => unit(run(es)(pbc).get()(b))(es)
+    })
+  }
+
 
   // My solution
   def sequence[A](ps: List[Par[A]]): Par[List[A]] = {
@@ -158,6 +206,17 @@ object Examples {
     println(Par.run(new ForkJoinPool())(sumPar(IndexedSeq(1, 2, 3, 4))))
     println("---------")
     println(sum(IndexedSeq(1, 2, 3, 4)))
+    val a = lazyUnit(42 + 1)
+    deadlockMe(10, a)
+
+    def deadlockMe[A](threads: Int, computation: Par[A]): Unit = {
+      val wrapInFork: Par[A] = (1 to threads).foldLeft(computation)((c, _) => {
+        fork(c)
+      })
+      println("Starting deadlock")
+      Par.equal[A](Executors.newFixedThreadPool(threads))(computation, wrapInFork)
+      println("deadlock over")
+    }
   }
 
 
